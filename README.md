@@ -1,6 +1,7 @@
 # GitScope — Honest GitHub Profile Audit
 
 GitScope analyzes a public GitHub profile as a **developer portfolio**, not as a measure of programming ability.
+**NOTE: THE GITHUB API MAY EXCEED ITS LIMIT AFTER A CERTAIN NUMBER OF TRIES, THIS ISSUE IS STILL CURRENTLY BEING WORKED ON**
 
 ## What it analyzes
 
