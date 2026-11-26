@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { analyzeGithubUser } from "@/lib/github";
+import { analyzeCachedGithubUser, GithubEvidenceError } from "@/lib/github";
 
 export const runtime = "nodejs";
 
@@ -15,13 +15,17 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const data = await analyzeGithubUser(raw);
+    const data = await analyzeCachedGithubUser(raw);
     return NextResponse.json(data, {
-      headers: { "Cache-Control": "s-maxage=120, stale-while-revalidate=300" }
+      headers: { "Cache-Control": "no-store" }
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to analyze profile.";
-    const status = message.includes("not found") ? 404 : message.includes("rate limit") ? 429 : 502;
-    return NextResponse.json({ error: message }, { status });
+    const message = error instanceof GithubEvidenceError ? error.message : "GitHub evidence unavailable. No score was calculated. Please try again later.";
+    const status = error instanceof GithubEvidenceError ? error.status : 502;
+    const headers: Record<string, string> = { "Cache-Control": "no-store" };
+    if (error instanceof GithubEvidenceError && error.status === 429 && error.retryAt !== undefined) {
+      headers["Retry-After"] = String(Math.max(1, Math.ceil((error.retryAt - Date.now()) / 1000)));
+    }
+    return NextResponse.json({ error: message }, { status, headers });
   }
 }
