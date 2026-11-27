@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 
 type Language = { name: string; value: number };
-type Readme = { exists: boolean; text: string; status: "present" | "missing" | "not_inspected" };
+type Readme = { exists: boolean; text: string; status: "present" | "missing" | "unavailable" | "not_inspected" };
 type Repo = {
   id: number; name: string; url: string; description: string | null; stars: number; forks: number;
   watchers: number; language: string | null; size: number; updatedAt: string; pushedAt: string | null;
@@ -27,7 +27,7 @@ type Analysis = {
     stars:number; forks:number; followers:number; following:number; activeRepositories:number;
     updated30:number; updated90:number; stale180:number; described:number; topicTagged:number;
     licensed:number; homepageLinked:number; readmeCount:number; strongReadmeCount:number;
-    profileReadme:boolean; accountAgeYears:number; publicEvents90:number; publicEvents30:number; activeEventRepos90:number;
+    profileReadme:boolean; profileReadmeStatus:Readme["status"]; accountAgeYears:number; publicEvents90:number; publicEvents30:number; activeEventRepos90:number;
   };
   languages: Language[];
   repositories: Repo[];
@@ -75,6 +75,32 @@ function repoReadmeQuality(repo: Repo) {
   return clamp(points * 16.66, 0, 100);
 }
 
+function readmeLabel(status: Readme["status"]) {
+  switch (status) {
+    case "present": return "README retrieved";
+    case "unavailable": return "README unavailable (404; absence unconfirmed)";
+    case "missing": return "No README evidenced";
+    case "not_inspected": return "README not inspected";
+  }
+}
+
+function profileReadmeEvidence(data: Analysis) {
+  switch (data.stats.profileReadmeStatus) {
+    case "present": return "Profile README detected.";
+    case "unavailable": return "Profile README unavailable (404; absence unconfirmed).";
+    case "not_inspected": return "Profile README not established from the incomplete repository list.";
+    case "missing": return "No public profile README repository found in the fetched list.";
+  }
+}
+
+function readmeLimitations(data: Analysis) {
+  const unavailable = data.evidence.filter(r => r.readme.status === "unavailable").length;
+  const profileUnknown = data.stats.profileReadmeStatus === "unavailable" || data.stats.profileReadmeStatus === "not_inspected";
+  return unavailable || profileUnknown
+    ? `${unavailable} of ${data.evidence.length} sampled repository READMEs returned an ambiguous 404. ${profileReadmeEvidence(data)} Unavailable README evidence earns no README credit under the unchanged formulas; scores may understate actual documentation, profile presentation, project signals and discoverability. A 404 cannot establish absence. Verify access or existence before acting on documentation gaps.`
+    : "";
+}
+
 function analyzeProfile(data: Analysis) {
   const active = data.evidence;
   const n = Math.max(1, active.length);
@@ -102,13 +128,13 @@ function analyzeProfile(data: Analysis) {
       key: "presentation", label: "Profile presentation", max: 12,
       score: Math.round(clamp((data.user.name ? 25 : 0) + (data.user.bio && data.user.bio.length >= 45 ? 30 : data.user.bio ? 16 : 0) + (data.stats.profileReadme ? 25 : 0) + (data.user.blog ? 10 : 0) + (data.user.twitter ? 5 : 0) + (data.user.company ? 5 : 0))),
       summary: "How clearly the profile explains who the developer is and what they build.",
-      evidence: [data.user.name ? "Display name is present." : "No display name is set.", data.user.bio ? `Bio length: ${data.user.bio.length} characters.` : "No public bio.", data.stats.profileReadme ? "Profile README detected." : "No profile README detected."]
+      evidence: [data.user.name ? "Display name is present." : "No display name is set.", data.user.bio ? `Bio length: ${data.user.bio.length} characters.` : "No public bio.", profileReadmeEvidence(data)]
     },
     {
       key: "documentation", label: "Documentation", max: 18,
       score: Math.round(clamp(readmeRatio * .25 + strongReadmeRatio * .35 + describedRatio * .2 + topicRatio * .1 + licenseRatio * .1)),
       summary: "Whether projects are understandable, discoverable, and usable by someone who did not build them.",
-      evidence: [`${data.stats.readmeCount}/${n} inspected repositories have a README.`, `${data.stats.strongReadmeCount}/${n} inspected READMEs are at least ~700 characters.`, `${describedRatio}% of active repositories have descriptions.`]
+      evidence: [`${data.stats.readmeCount}/${n} sampled repositories have a retrieved README.`, `${data.stats.strongReadmeCount}/${n} sampled repositories have a retrieved README of at least ~700 characters.`, `${describedRatio}% of active repositories have descriptions.`]
     },
     {
       key: "projectQuality", label: "Project quality & depth", max: 18,
@@ -144,7 +170,7 @@ function analyzeProfile(data: Analysis) {
       key: "discoverability", label: "Discoverability", max: 10,
       score: Math.round(clamp(describedRatio * .35 + topicRatio * .2 + homepageRatio * .15 + readmeRatio * .2 + (data.stats.profileReadme ? 10 : 0))),
       summary: "How quickly a visitor can understand and find the important work.",
-      evidence: [`${describedRatio}% of active repositories have descriptions.`, `${topicRatio}% have topics.`, `${homepageRatio}% have a homepage/demo URL.`, `${data.stats.profileReadme ? "Profile README exists." : "Profile README is missing."}`]
+      evidence: [`${describedRatio}% of active repositories have descriptions.`, `${topicRatio}% have topics.`, `${homepageRatio}% have a homepage/demo URL.`, profileReadmeEvidence(data)]
     }
   ];
 
@@ -161,14 +187,15 @@ function analyzeProfile(data: Analysis) {
   if (data.stats.stars + data.stats.forks > 0) add(strengths, { type: "strength", title: "There is measurable external interest", body: `Your public work has ${formatNumber(data.stats.stars)} stars and ${formatNumber(data.stats.forks)} forks. Those are concrete signals that other developers have interacted with the work.`, evidence: "Stars + forks" });
   if (languages >= 4) add(strengths, { type: "strength", title: "Your public stack is broad", body: `${languages} languages appear in the analyzed codebase. The breadth is useful when it supports different kinds of projects rather than being breadth for its own sake.`, evidence: `${languages} detected languages` });
 
-  if (!data.stats.profileReadme) add(gaps, { type: "gap", title: "There is no profile README", body: "A visitor currently has to infer your direction from the repository list. A concise profile README could connect your strongest projects, interests, skills, and links.", evidence: "No username/username profile README" });
+  if (data.stats.profileReadmeStatus === "missing") add(gaps, { type: "gap", title: "No public profile README repository found", body: "If you do not already have a public profile README, a concise one could connect your strongest projects, interests, skills, and links.", evidence: profileReadmeEvidence(data) });
+  if (data.stats.profileReadmeStatus === "unavailable" || data.stats.profileReadmeStatus === "not_inspected") add(gaps, { type: "warning", title: "Profile README evidence is uncertain", body: "Verify whether the public profile README exists and is accessible before creating or rewriting it.", evidence: profileReadmeEvidence(data) });
   if (describedRatio < 60) add(gaps, { type: "gap", title: "Too many projects require guesswork", body: `${100 - describedRatio}% of active repositories have no description. Empty descriptions make even good code look unfinished from the outside.`, evidence: `${data.stats.activeRepositories - data.stats.described} active repos without descriptions` });
-  if (readmeRatio < 60) add(gaps, { type: "gap", title: "Documentation coverage is inconsistent", body: `Only ${readmeRatio}% of inspected repositories have READMEs. The biggest projects should be documented first, with purpose, setup, usage, screenshots/demo, and technical decisions.`, evidence: `${data.stats.readmeCount}/${n} inspected repos with READMEs` });
+  if (active.length && readmeRatio < 60) add(gaps, { type: "warning", title: "Documentation coverage could not be established", body: `READMEs were retrieved for ${readmeRatio}% of sampled repositories. Check the unavailable READMEs before deciding what needs documentation; a 404 does not prove absence.`, evidence: `${data.stats.readmeCount}/${n} sampled repos with retrieved READMEs` });
   if (licenseRatio < 50 && data.stats.originalRepositories > 0) add(gaps, { type: "gap", title: "Licensing is unclear on much of the portfolio", body: `${licenseRatio}% of active repositories have a detected license. If you intend others to reuse your code, make the licensing decision explicit.`, evidence: `${data.stats.licensed}/${data.stats.activeRepositories} licensed` });
   if (topicRatio < 50) add(gaps, { type: "gap", title: "Repository discovery could be stronger", body: `${topicRatio}% of active repositories have topics. Consistent topics make related projects easier to scan and categorize.`, evidence: `${data.stats.topicTagged}/${data.stats.activeRepositories} tagged` });
   if (staleRatio >= 50 && data.stats.activeRepositories > 0) add(gaps, { type: "warning", title: "A large part of the public portfolio looks dormant", body: `${staleRatio}% of active repositories have not been pushed in 180+ days. That is not inherently bad, but it makes the portfolio look less maintained unless those projects are clearly marked as completed or archived.`, evidence: `${data.stats.stale180}/${data.stats.activeRepositories} stale 180d+` });
   if (data.activity.recent90 === 0) add(gaps, { type: "warning", title: "Recent public activity is not visible", body: "The public events API shows no events in the last 90 days. This does not prove you have not been coding because private work and GitHub's contribution graph are not exposed here.", evidence: "0 public events visible in 90d" });
-  if (data.stats.activeRepositories > 12 && projectSignalRatio < 55) add(gaps, { type: "gap", title: "Portfolio quantity may be diluting the signal", body: "You have many public repositories, but relatively few of the inspected projects have multiple presentation/quality signals. Pinning and polishing a smaller set of flagship projects would make the portfolio easier to evaluate.", evidence: `${projectSignals}/${n} inspected projects show multiple quality signals` });
+  if (data.stats.activeRepositories > 12 && projectSignalRatio < 55) add(gaps, { type: "gap", title: "Portfolio quantity may be diluting the signal", body: "You have many public repositories, but relatively few sampled projects have multiple observed presentation/quality signals. Check unavailable README evidence before deciding whether to polish or pin projects.", evidence: `${projectSignals}/${n} inspected projects show multiple quality signals` });
 
   const recommendations = recommendProjects(data);
   return { categories, score, strengths: strengths.slice(0, 5), gaps: gaps.slice(0, 7), recommendations };
@@ -207,8 +234,8 @@ function recommendProjects(data: Analysis): Recommendation[] {
   if (recs.length < 4) {
     recs.push({ title: "Flagship project with a measurable outcome", why: "Your existing portfolio should be turned into a stronger story by taking one recurring theme and pushing it to a measurable outcome.", build: "Choose a problem you already care about, define one metric before coding, build a real end-to-end solution, collect results, and publish the methodology, screenshots, architecture, and limitations.", stack: [langs.has("python") ? "Python" : "JavaScript", "API/backend", "Database", "Interactive UI"] });
   }
-  if (data.stats.readmeCount < Math.max(1, data.evidence.length * .7)) {
-    recs.push({ title: "Documentation-first open-source project", why: "Because documentation is currently a visible gap, choose a project where excellent documentation is part of the deliverable—not an afterthought.", build: "Build a small but useful developer tool and ship a README with installation, examples, screenshots, architecture, testing, contribution guidance, and release notes.", stack: [langs.has("python") ? "Python" : "JavaScript", "CLI or web", "Tests", "GitHub Actions"] });
+  if (data.evidence.length && data.stats.readmeCount < Math.max(1, data.evidence.length * .7)) {
+    recs.push({ title: "Documentation-first open-source project", why: "README retrieval coverage is low. Verify whether unavailable READMEs already exist before treating documentation as a gap.", build: "If documentation is genuinely missing, improve an existing project or ship a small tool with installation, examples, architecture, tests and contribution guidance.", stack: [langs.has("python") ? "Python" : "JavaScript", "CLI or web", "Tests", "GitHub Actions"] });
   }
   const seen = new Set<string>();
   return recs.filter(r => !seen.has(r.title) && seen.add(r.title)).slice(0, 5);
@@ -274,7 +301,9 @@ export default function Analyzer() {
 
       <div className="score-hero"><div><span className="section-kicker">PERSONALIZED PROFILE SCORE</span><h2>{audit.score}<small>/100</small></h2><p>This score measures the quality of the <strong>public GitHub profile as a portfolio</strong>. It is not a score of programming ability, and popularity is only one small category.</p></div><ScoreRing score={audit.score}/></div>
 
-      <div className="stats-grid">{[["Original repos",data.stats.originalRepositories,BookOpen],["Stars",data.stats.stars,Star],["Forks",data.stats.forks,GitFork],["Followers",data.stats.followers,Users],["Updated 90d",data.stats.updated90,TrendingUp],["READMEs",data.stats.readmeCount,FileText],["Licensed",data.stats.licensed,ShieldCheck],["Languages",data.languages.length,Code2]].map(([label,value,Icon])=>{const I=Icon as typeof Star;return <div className="stat" key={String(label)}><div className="stat-top"><span>{String(label)}</span><I size={15}/></div><strong>{formatNumber(Number(value))}</strong><small>public evidence</small></div>})}</div>
+      {readmeLimitations(data) && <div className="data-note" role="status"><CircleAlert size={17}/><div><strong>README evidence and score limitations</strong><p>{readmeLimitations(data)}</p></div></div>}
+
+      <div className="stats-grid">{[["Original repos",data.stats.originalRepositories,BookOpen],["Stars",data.stats.stars,Star],["Forks",data.stats.forks,GitFork],["Followers",data.stats.followers,Users],["Updated 90d",data.stats.updated90,TrendingUp],["READMEs retrieved",data.stats.readmeCount,FileText],["Licensed",data.stats.licensed,ShieldCheck],["Languages",data.languages.length,Code2]].map(([label,value,Icon])=>{const I=Icon as typeof Star;return <div className="stat" key={String(label)}><div className="stat-top"><span>{String(label)}</span><I size={15}/></div><strong>{formatNumber(Number(value))}</strong><small>public evidence</small></div>})}</div>
 
       <div className="tabs"><button className={tab==="overview"?"active":""} onClick={()=>setTab("overview")}>Overview</button><button className={tab==="audit"?"active":""} onClick={()=>setTab("audit")}>Full audit</button><button className={tab==="projects"?"active":""} onClick={()=>setTab("projects")}>What to build</button></div>
 
@@ -296,7 +325,7 @@ export default function Analyzer() {
         <div className="section-head"><div><span className="section-kicker">PERSONALIZED IDEAS</span><h2>What you should build next</h2></div><span className="muted">Derived from your public project history</span></div>
         <div className="recommend-grid">{audit.recommendations.map((r,i)=><div className="recommend-card" key={r.title}><div className="recommend-number">0{i+1}</div><h3>{r.title}</h3><p className="why"><strong>Why this fits:</strong> {r.why}</p><p>{r.build}</p><div className="stack">{r.stack.map(s=><span key={s}>{s}</span>)}</div></div>)}</div>
         <div className="section-head repo-head"><div><span className="section-kicker">PAST PROJECTS</span><h2>Projects the analyzer used</h2></div></div>
-        <div className="repo-grid">{data.repositories.map(r=><a className="repo-card" href={r.url} target="_blank" rel="noreferrer" key={r.id}><div className="repo-title"><Code2 size={16}/><h3>{r.name}</h3><ArrowUpRight size={14}/></div><p>{r.description||"No description provided."}</p><div className="topic-row">{r.topics.slice(0,4).map(t=><span key={t}>{t}</span>)}</div><div className="repo-bottom"><span>{r.language||"Other"}</span><span><Star size={13}/>{formatNumber(r.stars)}</span><span><GitFork size={13}/>{formatNumber(r.forks)}</span><span>{r.readme.status==="not_inspected"?"README not inspected":r.readme.exists?"README":"No README"}</span></div></a>)}</div>
+        <div className="repo-grid">{data.repositories.map(r=><a className="repo-card" href={r.url} target="_blank" rel="noreferrer" key={r.id}><div className="repo-title"><Code2 size={16}/><h3>{r.name}</h3><ArrowUpRight size={14}/></div><p>{r.description||"No description provided."}</p><div className="topic-row">{r.topics.slice(0,4).map(t=><span key={t}>{t}</span>)}</div><div className="repo-bottom"><span>{r.language||"Other"}</span><span><Star size={13}/>{formatNumber(r.stars)}</span><span><GitFork size={13}/>{formatNumber(r.forks)}</span><span>{readmeLabel(r.readme.status)}</span></div></a>)}</div>
       </>}
 
       <div className="section-head repo-head"><div><span className="section-kicker">RECENT ACTIVITY</span><h2>What GitHub publicly shows</h2></div><span className="muted">Last 90 days: {data.activity.recent90} public events</span></div><div className="activity-list">{data.recent.map(r=><a href={r.url} target="_blank" rel="noreferrer" className="activity" key={r.name}><span className="activity-dot"/><div><b>{r.name}</b><small>{r.language||"Repository"} · {timeAgo(r.pushedAt)}</small></div><ArrowUpRight size={15}/></a>)}</div>

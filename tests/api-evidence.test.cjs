@@ -25,7 +25,9 @@ function load(file, source, overrides = {}) {
 const baselineRef = process.env.GITSCOPE_BASELINE_REF;
 const oldSource = file => execFileSync("git", ["show", baselineRef + ":" + file], { cwd: root, encoding: "utf8" });
 const scoreModule = source => load("components/Analyzer.tsx", source + "\nexport { analyzeProfile };");
-const candidateScore = scoreModule(fs.readFileSync(path.join(root, "components/Analyzer.tsx"), "utf8")).analyzeProfile;
+const candidateUI = load("components/Analyzer.tsx", fs.readFileSync(path.join(root, "components/Analyzer.tsx"), "utf8") + "\nexport { analyzeProfile, readmeLabel, readmeLimitations };");
+const candidateScore = candidateUI.analyzeProfile;
+const numericScores = audit => ({score:audit.score, categories:audit.categories.map(({key,score,max})=>({key,score,max}))});
 let current, route;
 const originalFetch = global.fetch;
 const realNow = Date.now;
@@ -104,7 +106,7 @@ function fixture(username, { count = 24, profile = true, profileLast = false, mi
 
 const { NextRequest } = require("next/server");
 const request = username => new NextRequest("http://localhost/api/analyze?username=" + encodeURIComponent(username));
-const normalize = x => JSON.parse(JSON.stringify(x, (key, value) => key === "status" ? undefined : value));
+const normalize = x => JSON.parse(JSON.stringify(x, (key, value) => ["status","profileReadmeStatus"].includes(key) ? undefined : value));
 
 test("complete audit: reuse inspected profile README, bounded request concurrency", async () => {
   const f = fixture("complete");
@@ -117,12 +119,21 @@ test("complete audit: reuse inspected profile README, bounded request concurrenc
   assert.equal(data.evidence[0].readme.status, "present");
 });
 
-test("confirmed missing README is not a failed audit", async () => {
+test("ambiguous README 404 is unavailable, not confirmed missing", async () => {
   fixture("missing", { count: 2, missing: ["missing", "repo-1"] });
   const data = await current.analyzeGithubUser("missing");
   assert.equal(data.stats.readmeCount, 0);
   assert.equal(data.stats.profileReadme, false);
-  assert.ok(data.evidence.every(r => r.readme.status === "missing"));
+  assert.ok(data.evidence.every(r => r.readme.status === "unavailable"));
+  assert.equal(data.stats.profileReadmeStatus,"unavailable");
+  assert.ok(data.repositories.every(r => r.readme.status === "unavailable"));
+  const audit = candidateScore(data);
+  assert.ok(audit.gaps.some(g=>g.title==="Profile README evidence is uncertain"));
+  assert.ok(!audit.gaps.some(g=>g.title==="No public profile README repository found"));
+  assert.ok(audit.gaps.some(g=>g.title==="Documentation coverage could not be established"));
+  assert.match(candidateUI.readmeLabel("unavailable"),/absence unconfirmed/);
+  assert.match(candidateUI.readmeLimitations(data),/unchanged formulas/);
+  assert.match(audit.recommendations.find(r=>r.title==="Documentation-first open-source project").why,/Verify whether unavailable/);
   assert.ok(Number.isFinite(candidateScore(data).score));
 });
 
@@ -240,7 +251,7 @@ test("original scoring and successful response equivalence", { skip: !baselineRe
     const c = fixture(name,opts);
     const result = await current.analyzeGithubUser(name);
     assert.deepEqual(normalize(result),base);
-    assert.deepEqual(candidateScore(result),originalScore(base));
+    assert.deepEqual(numericScores(candidateScore(result)),numericScores(originalScore(base)));
     console.log(JSON.stringify({fixture:name,baselineRequests:f.calls.length,candidateRequests:c.calls.length,score:candidateScore(result).score,baselinePeak:f.peak(),candidatePeak:c.peak()}));
   }
 });
@@ -256,7 +267,7 @@ test("rate-limited first README: compare baseline request waste", { skip: !basel
   await assert.rejects(current.analyzeGithubUser("limited"), e => e.status===429);
   assert.equal(a.calls.length,52);
   assert.equal(b.calls.length,7);
-  console.log(JSON.stringify({fixture:"rate-limited",baselineRequests:a.calls.length,candidateRequests:b.calls.length,baselineMisleadingScore: candidateScore(misleading).score,candidateScore:null}));
+  console.log(JSON.stringify({fixture:"rate-limited",baselineRequests:a.calls.length,candidateRequests:b.calls.length,baselineMisleadingScore: scoreModule(oldSource("components/Analyzer.tsx")).analyzeProfile(misleading).score,candidateScore:null}));
 });
 
 test("repeat audit comparison: same data and fewer actual requests", { skip: !baselineRef }, async () => {
@@ -502,7 +513,7 @@ test("differential pagination and sampling boundaries retain scoring and report 
     const b=fixture(name,opts);
     const candidate=await current.analyzeGithubUser(name);
     assert.deepEqual(normalize(candidate),original,name);
-    assert.deepEqual(candidateScore(candidate),oldScore(original),name);
+    assert.deepEqual(numericScores(candidateScore(candidate)),numericScores(oldScore(original)),name);
     assert.ok(b.calls.length<=a.calls.length,name);
     assert.ok(b.peak()<=4,name);
     assert.ok(candidate.evidence.length<=24,name);
@@ -611,4 +622,84 @@ test("cached anonymous report remains usable while new authenticated and anonymo
     assert.equal((await route.GET(request("cached"))).status,429);
     assert.equal(f.calls.length,0);
   } finally {delete process.env.GITHUB_TOKEN;}
+});
+
+test("missing visible profile repository is separate from ambiguous README 404", async () => {
+  const f=fixture("noprofile-visible",{count:2,profile:false});
+  const data=await current.analyzeGithubUser("noprofile-visible");
+  assert.equal(data.stats.profileReadmeStatus,"missing");
+  assert.equal(data.stats.profileReadme,false);
+  assert.ok(data.evidence.every(r=>r.readme.status==="present"));
+  assert.ok(candidateScore(data).gaps.some(g=>g.title==="No public profile README repository found"));
+  assert.equal(candidateUI.readmeLimitations(data),"");
+  assert.equal(f.calls.length,7);
+});
+
+test("incomplete repository list cannot establish profile README absence", async () => {
+  fixture("incomplete",{count:2,profile:false,transformUser:u=>({...u,public_repos:3})});
+  const data=await current.analyzeGithubUser("incomplete");
+  assert.equal(data.stats.profileReadmeStatus,"not_inspected");
+  assert.ok(candidateScore(data).gaps.some(g=>g.title==="Profile README evidence is uncertain"));
+  assert.match(candidateUI.readmeLimitations(data),/incomplete repository list/);
+});
+
+test("same 404 for genuinely absent and concealed README yields identical uncertainty", async () => {
+  for(const cause of ["absent","concealed"]){
+    const f=fixture("ambiguous-"+cause,{count:2,fail:u=>u.pathname.endsWith("/readme")?{status:404,body:{message:"Not Found"}}:null});
+    const data=await current.analyzeGithubUser("ambiguous-"+cause);
+    assert.equal(data.stats.profileReadmeStatus,"unavailable");
+    assert.ok(data.evidence.every(r=>r.readme.status==="unavailable"));
+    assert.match(candidateUI.readmeLimitations(data),/A 404 cannot establish absence/);
+    assert.equal(f.calls.length,7);
+  }
+});
+
+test("follow-up preserves exact main scores and API paths", {skip:!process.env.GITSCOPE_FOLLOWUP_BASELINE_REF}, async () => {
+  const baseRef=process.env.GITSCOPE_FOLLOWUP_BASELINE_REF;
+  const source=file=>execFileSync("git",["show",baseRef+":"+file],{cwd:root,encoding:"utf8"});
+  const prior=load("lib/github.ts",source("lib/github.ts"));
+  const priorScore=scoreModule(source("components/Analyzer.tsx")).analyzeProfile;
+  for(const [name,opts] of [
+    ["parity-all",{}],["parity-404",{count:3,missing:["parity-404","repo-1"]}],
+    ["parity-no-profile",{count:2,profile:false}],["parity-outside",{count:40,profileLast:true,missing:["parity-outside"]}],
+    ["parity-empty",{count:0,profile:false}],["parity-cap",{count:1001,profileLast:true}]
+  ]){
+    const a=fixture(name,opts), baseline=await prior.analyzeGithubUser(name);
+    const b=fixture(name,opts), result=await current.analyzeGithubUser(name);
+    assert.deepEqual([...a.calls].sort(),[...b.calls].sort(),name);
+    assert.equal(a.peak(),b.peak(),name);
+    assert.deepEqual(normalize(result),normalize(baseline),name);
+    assert.deepEqual(numericScores(candidateScore(result)),numericScores(priorScore(baseline)),name);
+    console.log(JSON.stringify({fixture:name,requests:b.calls.length,score:candidateScore(result).score}));
+  }
+});
+
+test("rendered dashboard distinguishes unavailable README from missing public profile repository", async () => {
+  const react = require("react");
+  const {renderToStaticMarkup} = require("react-dom/server");
+  function render(data, tab) {
+    const states = [data.user.login,data,false,"",true,tab];
+    let index = 0;
+    const Analyzer = load("components/Analyzer.tsx",undefined,{react:{...react,useState:()=>[states[index++],()=>{}],useMemo:fn=>fn()}}).default;
+    return renderToStaticMarkup(react.createElement(Analyzer));
+  }
+  fixture("render-404",{count:2,missing:["render-404","repo-1"]});
+  const unavailable = await current.analyzeGithubUser("render-404");
+  for(const tab of ["overview","audit","projects"]){
+    const html=render(unavailable,tab);
+    assert.match(html,/README evidence and score limitations/);
+    assert.match(html,/A 404 cannot establish absence/);
+    assert.doesNotMatch(html,/No public profile README repository found/);
+    if(tab==="projects"){
+      assert.match(html,/README unavailable \(404; absence unconfirmed\)/);
+      assert.match(html,/Verify whether unavailable READMEs/);
+    }
+    if(tab==="overview") assert.match(html,/Profile README evidence is uncertain/);
+    if(tab==="audit") assert.match(html,/Profile README unavailable \(404; absence unconfirmed\)/);
+  }
+  fixture("render-missing",{count:2,profile:false});
+  const missing=await current.analyzeGithubUser("render-missing");
+  const html=render(missing,"overview");
+  assert.match(html,/No public profile README repository found/);
+  assert.doesNotMatch(html,/README evidence and score limitations/);
 });
