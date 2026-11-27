@@ -67,7 +67,8 @@ test("compiled Next.js HTTP route: validation, failure handling, cache, no stale
     assert.equal(count(),5);
     const missing=await get(port,"missing");
     assert.equal(missing.status,200);
-    assert.equal(missing.body.evidence[0].readme.status,"missing");
+    assert.equal(missing.body.evidence[0].readme.status,"unavailable");
+    assert.equal(missing.body.stats.profileReadmeStatus,"unavailable");
     const notFound=await get(port,"unknown");
     assert.equal(notFound.status,404);
     for(const [name,expected] of [["partial",502],["malformed",502]]){

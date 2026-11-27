@@ -38,7 +38,7 @@ export class GithubEvidenceError extends Error {
   }
 }
 
-type Readme = { exists: boolean; text: string; status: "present" | "missing" | "not_inspected" };
+type Readme = { exists: boolean; text: string; status: "present" | "missing" | "unavailable" | "not_inspected" };
 
 function unavailable(context: string) {
   return new GithubEvidenceError(502, `GitHub evidence unavailable (${context}). No score was calculated. Please try again later.`);
@@ -181,7 +181,8 @@ async function fetchAllRepos(username: string) {
 async function fetchReadme(owner: string, repo: string): Promise<Readme> {
   const context = `README for ${repo}`;
   const data = await githubFetch<GithubReadme>(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/readme`, context, true);
-  if (data === undefined) return { exists: false, text: "", status: "missing" };
+  // README 404 is ambiguous: GitHub can conceal inaccessible resources.
+  if (data === undefined) return { exists: false, text: "", status: "unavailable" };
   if (typeof data.content !== "string" || data.encoding !== "base64") throw unavailable(context);
   // GitHub wraps Base64 over multiple lines. Buffer's decoder alone silently
   // accepts invalid characters, so verify the canonical round trip.
@@ -299,9 +300,9 @@ export async function analyzeGithubUser(username: string) {
   }));
 
   const profileReadmeRepo = repos.find(r => r.name.toLowerCase() === username.toLowerCase() && r.full_name.toLowerCase() === `${username.toLowerCase()}/${username.toLowerCase()}`);
-  const profileReadme = profileReadmeRepo
+  const profileReadme: Readme = profileReadmeRepo
     ? repoEvidence.find(r => r.id === profileReadmeRepo.id)?.readme ?? await fetchReadme(username, profileReadmeRepo.name)
-    : { exists: false, text: "", status: "missing" as const };
+    : { exists: false, text: "", status: repos.length < 1000 && repos.length >= user.public_repos ? "missing" : "not_inspected" };
 
   const languageBytes: Record<string, number> = {};
   for (const repo of repoEvidence) {
@@ -369,6 +370,7 @@ export async function analyzeGithubUser(username: string) {
       readmeCount,
       strongReadmeCount,
       profileReadme: profileReadme.exists,
+      profileReadmeStatus: profileReadme.status,
       accountAgeYears: Number(accountAgeYears.toFixed(1)),
       publicEvents90: recent90.length,
       publicEvents30: recent30.length,
