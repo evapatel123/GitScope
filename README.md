@@ -1,7 +1,7 @@
 # GitScope — Honest GitHub Profile Audit
 
 GitScope analyzes a public GitHub profile as a **developer portfolio**, not as a measure of programming ability.
-**NOTE: THE GITHUB API MAY EXCEED ITS LIMIT AFTER A CERTAIN NUMBER OF TRIES, THIS ISSUE IS STILL CURRENTLY BEING WORKED ON**
+**GitHub API limits:** GitScope reduces redundant requests, but rate limits can still prevent an audit. If necessary evidence cannot be retrieved, it reports the failure instead of calculating a misleading score.
 
 This is also an open-source project so if you'd like to contribute, read the CONTRIBUTING.md :)
 
@@ -25,6 +25,14 @@ GitHub's public API cannot see private repositories, private contributions, loca
 
 Public event data is also limited by GitHub and should not be treated as an exact contribution count.
 
+### Request efficiency and incomplete evidence
+
+- The inspected profile README is reused instead of being fetched twice. Repository inspection runs in batches of at most four concurrent requests per audit. Already-started requests settle before a failed audit is released; each request has a 15-second timeout. No further batch is started after failure.
+- Anonymous, successful analyses are reused for 120 seconds within one server process (up to 32 cached profiles). Identical in-flight requests for the same username are coalesced, subject to the 32-entry pending-map limit. Token-backed requests bypass this cache. HTTP responses use `Cache-Control: no-store` to avoid stacking cache lifetimes or sharing token-backed results.
+- Rate-limit responses return HTTP 429 with a Retry-After header. Within one server process, new GitHub requests pause until the later applicable Retry-After or primary reset deadline (60 seconds if neither provides a future deadline). Already cached successful anonymous reports can still be served. The cooldown is conservative across credential modes; it is not distributed and does not retry automatically. Other retrieval failures (including malformed evidence and timeouts) return HTTP 502, without producing a score. A profile lookup returning 404 remains a not-found error; a README 404 for a listed public repository is treated as missing, rather than treating every request error as missing. GitHub can also use 404 to conceal inaccessible resources, so this is not a guarantee that a README does not exist.
+- A repository outside the inspection sample is labeled as not inspected, not as having no README. Existing score formulas, pagination limits, sampling rules, and successful language-map fallback are unchanged.
+- The cache is process-local, not a distributed quota manager. Cold requests for different profiles may still reach the API limit. Batching may increase cold-audit latency, and no requests are retried automatically.
+
 ## Setup
 
 1. Install Node.js 20.9+.
@@ -39,6 +47,9 @@ Then open the local Next.js URL and enter a GitHub username.
 
 - `npm run typecheck`
 - `npm run build`
+- `npm test` — deterministic synthetic responses; no live GitHub requests or real credentials.
+- `npm run test:http` — after a production build, exercise the actual HTTP endpoint on localhost with mocked GitHub responses.
+- Optional upstream comparison: `GITSCOPE_BASELINE_REF=242f1096c2a4642ab343562541aef2c3cc31245f npm test` (requires the base commit in local Git history). This compares actual request counts, response data excluding the new README status field, and the original scoring output.
 
 ## Architecture
 

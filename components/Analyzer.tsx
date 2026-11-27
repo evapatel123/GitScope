@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 
 type Language = { name: string; value: number };
-type Readme = { exists: boolean; text: string };
+type Readme = { exists: boolean; text: string; status: "present" | "missing" | "not_inspected" };
 type Repo = {
   id: number; name: string; url: string; description: string | null; stars: number; forks: number;
   watchers: number; language: string | null; size: number; updatedAt: string; pushedAt: string | null;
@@ -249,7 +249,7 @@ export default function Analyzer() {
 
   async function analyze(e?: FormEvent) {
     e?.preventDefault(); const value = username.trim().replace(/^@/, ""); if (!value) return;
-    setLoading(true); setError("");
+    setLoading(true); setError(""); setData(null);
     try {
       const res = await fetch(`/api/analyze?username=${encodeURIComponent(value)}`, { cache: "no-store" });
       const json = await res.json(); if (!res.ok) throw new Error(json.error || "Analysis failed.");
@@ -296,7 +296,7 @@ export default function Analyzer() {
         <div className="section-head"><div><span className="section-kicker">PERSONALIZED IDEAS</span><h2>What you should build next</h2></div><span className="muted">Derived from your public project history</span></div>
         <div className="recommend-grid">{audit.recommendations.map((r,i)=><div className="recommend-card" key={r.title}><div className="recommend-number">0{i+1}</div><h3>{r.title}</h3><p className="why"><strong>Why this fits:</strong> {r.why}</p><p>{r.build}</p><div className="stack">{r.stack.map(s=><span key={s}>{s}</span>)}</div></div>)}</div>
         <div className="section-head repo-head"><div><span className="section-kicker">PAST PROJECTS</span><h2>Projects the analyzer used</h2></div></div>
-        <div className="repo-grid">{data.repositories.map(r=><a className="repo-card" href={r.url} target="_blank" rel="noreferrer" key={r.id}><div className="repo-title"><Code2 size={16}/><h3>{r.name}</h3><ArrowUpRight size={14}/></div><p>{r.description||"No description provided."}</p><div className="topic-row">{r.topics.slice(0,4).map(t=><span key={t}>{t}</span>)}</div><div className="repo-bottom"><span>{r.language||"Other"}</span><span><Star size={13}/>{formatNumber(r.stars)}</span><span><GitFork size={13}/>{formatNumber(r.forks)}</span><span>{r.readme.exists?"README":"No README"}</span></div></a>)}</div>
+        <div className="repo-grid">{data.repositories.map(r=><a className="repo-card" href={r.url} target="_blank" rel="noreferrer" key={r.id}><div className="repo-title"><Code2 size={16}/><h3>{r.name}</h3><ArrowUpRight size={14}/></div><p>{r.description||"No description provided."}</p><div className="topic-row">{r.topics.slice(0,4).map(t=><span key={t}>{t}</span>)}</div><div className="repo-bottom"><span>{r.language||"Other"}</span><span><Star size={13}/>{formatNumber(r.stars)}</span><span><GitFork size={13}/>{formatNumber(r.forks)}</span><span>{r.readme.status==="not_inspected"?"README not inspected":r.readme.exists?"README":"No README"}</span></div></a>)}</div>
       </>}
 
       <div className="section-head repo-head"><div><span className="section-kicker">RECENT ACTIVITY</span><h2>What GitHub publicly shows</h2></div><span className="muted">Last 90 days: {data.activity.recent90} public events</span></div><div className="activity-list">{data.recent.map(r=><a href={r.url} target="_blank" rel="noreferrer" className="activity" key={r.name}><span className="activity-dot"/><div><b>{r.name}</b><small>{r.language||"Repository"} · {timeAgo(r.pushedAt)}</small></div><ArrowUpRight size={15}/></a>)}</div>
